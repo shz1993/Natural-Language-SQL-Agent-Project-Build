@@ -15,7 +15,7 @@ def get_db_connection():
         password=st.secrets["POSTGRES_PASSWORD"]
     )
 
-# ---------- Schema Fetching (Lowercase) ----------
+# ---------- Schema Fetching ----------
 def get_table_schema(conn):
     """Fetch all table names and their columns for Chinook database."""
     schema_info = []
@@ -49,7 +49,7 @@ def init_gemini():
         st.error(f"Failed to initialize Gemini: {e}")
         return None
 
-# ---------- LLM: Natural Language -> SQL (Lowercase) ----------
+# ---------- LLM: Natural Language -> SQL ----------
 def generate_sql(question, schema, conversation_history, model):
     """Ask Gemini to generate a valid PostgreSQL query."""
     if model is None:
@@ -58,25 +58,25 @@ def generate_sql(question, schema, conversation_history, model):
     prompt = f"""
 You are an expert at converting natural language questions into PostgreSQL queries.
 
-IMPORTANT: This database uses LOWERCASE table and column names.
-Do NOT use double quotes around names. Just write them as-is.
+IMPORTANT: This database uses table and column names in CamelCase (first letter capitalized).
+Use the EXACT names as shown below - they are case-sensitive but work without quotes:
 
 Schema:
 {schema}
 
 Example of correct SQL:
-SELECT track.name, SUM(invoiceline.quantity) as total_sold
-FROM invoiceline
-JOIN track ON invoiceline.trackid = track.trackid
-GROUP BY track.name
-ORDER BY total_sold DESC
+SELECT Track.Name, SUM(InvoiceLine.Quantity) as TotalSold
+FROM InvoiceLine
+JOIN Track ON InvoiceLine.TrackId = Track.TrackId
+GROUP BY Track.Name
+ORDER BY TotalSold DESC
 LIMIT 5;
 
 Rules:
-- ONLY output the SQL query, no extra text
-- Use lowercase table and column names (no double quotes)
+- ONLY output the SQL query, no extra text, no markdown
+- Use the table and column names EXACTLY as shown in the schema
+- Do NOT use double quotes around names
 - Use LIMIT 10 unless specified otherwise
-- For "top X best-selling tracks by quantity", join invoiceline with track on trackid
 
 User question: {question}
 SQL:
@@ -90,9 +90,6 @@ SQL:
         sql = re.sub(r'^```sql\n?', '', sql)
         sql = re.sub(r'^```\n?', '', sql)
         sql = re.sub(r'\n?```$', '', sql)
-        
-        # Remove any double quotes that might appear
-        sql = sql.replace('"', '')
         
         return sql
     except Exception as e:
@@ -124,16 +121,19 @@ def correct_sql(question, sql, error_msg, schema, model):
     prompt = f"""
 The following SQL query failed. Please fix it.
 
-IMPORTANT: This database uses LOWERCASE table and column names.
-Do NOT use double quotes. Just use plain lowercase names like: invoiceline, track, customer.
+IMPORTANT: This database uses table names in CamelCase like: InvoiceLine, Track, Customer.
+Do NOT use double quotes. Use the exact names from the schema.
 
 Question: {question}
 Failed SQL: {sql}
 Error: {error_msg}
-Schema: {schema}
+
+Schema (use these exact names):
+{schema}
 
 Rules:
-- Use lowercase names (no double quotes)
+- Use the exact table and column names from the schema (CamelCase)
+- Do NOT add double quotes
 - Output only the corrected SQL
 
 Corrected SQL:
@@ -144,7 +144,6 @@ Corrected SQL:
         new_sql = re.sub(r'^```sql\n?', '', new_sql)
         new_sql = re.sub(r'^```\n?', '', new_sql)
         new_sql = re.sub(r'\n?```$', '', new_sql)
-        new_sql = new_sql.replace('"', '')
         return new_sql
     except Exception as e:
         st.error(f"Gemini API error: {e}")
@@ -172,21 +171,6 @@ Answer:
     except Exception:
         return f"Results:\n{result_str}"
 
-# ---------- Debug: Show Tables ----------
-def debug_show_tables(conn):
-    """Helper to display actual table names."""
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_schema='public'
-            ORDER BY table_name;
-        """)
-        tables = cur.fetchall()
-        st.sidebar.write("📋 Database Tables:")
-        for table in tables:
-            st.sidebar.write(f"  - `{table[0]}`")
-
 # ---------- Main App ----------
 def main():
     st.set_page_config(page_title="AI SQL Agent", layout="wide")
@@ -207,8 +191,14 @@ def main():
             st.session_state.conn = get_db_connection()
             st.session_state.schema = get_table_schema(st.session_state.conn)
             st.success("✅ Connected to database!")
-            # Debug: show tables in sidebar
-            debug_show_tables(st.session_state.conn)
+            
+            # Show tables in sidebar for debugging
+            with st.sidebar:
+                st.write("📋 Database Tables:")
+                for table in ['Album', 'Artist', 'Customer', 'Employee', 'Genre', 
+                              'Invoice', 'InvoiceLine', 'MediaType', 'Playlist', 
+                              'PlaylistTrack', 'Track']:
+                    st.write(f"  - {table}")
         except Exception as e:
             st.error(f"Database error: {e}")
             st.stop()

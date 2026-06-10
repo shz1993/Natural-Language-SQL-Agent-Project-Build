@@ -27,3 +27,8 @@ Ask questions about a PostgreSQL database in plain English – AI converts them 
 - "Who is the top customer by total purchase?"
 - "Show me all tracks in the 'Rock' genre"
 - "Which sales agent sold the most in 2013?"
+-Show me the top 5 best-selling tracks by quantity."
+-Who is the customer who spent the most money?"
+-List all rock tracks longer than 5 minutes."
+-Which employee has the most customers?"
+-What is the total sales per country?"

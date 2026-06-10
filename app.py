@@ -12,7 +12,7 @@ def get_db_connection():
         port=st.secrets["POSTGRES_PORT"],
         database=st.secrets["POSTGRES_DB"],
         user=st.secrets["POSTGRES_USER"],
-        password=st.secrets["POSTGRES_PASSWORD"]
+        password=st.secrets["POSTGRES_PASSWORD"],
         connect_timeout=10
     )
 

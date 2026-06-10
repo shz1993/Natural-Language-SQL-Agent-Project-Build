@@ -4,6 +4,51 @@ import pandas as pd
 import re
 import google.generativeai as genai
 
+# ---------- Helper: Normalize Table Names (Case-Sensitive Fix) ----------
+def normalize_table_names(sql):
+    """Automatically quote table names correctly for case-sensitive PostgreSQL."""
+    # Mapping of lowercase/incorrect patterns to properly quoted table names
+    table_mapping = {
+        r'\binvoiceline\b': '"InvoiceLine"',
+        r'\binvoice\b': '"Invoice"',
+        r'\btrack\b': '"Track"',
+        r'\bcustomer\b': '"Customer"',
+        r'\bartist\b': '"Artist"',
+        r'\balbum\b': '"Album"',
+        r'\bgenre\b': '"Genre"',
+        r'\bplaylist\b': '"Playlist"',
+        r'\bplaylisttrack\b': '"PlaylistTrack"',
+        r'\bemployee\b': '"Employee"',
+        r'\bmediatype\b': '"MediaType"',
+    }
+    
+    for pattern, replacement in table_mapping.items():
+        sql = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
+    
+    # Also fix column names that are commonly problematic
+    column_mapping = {
+        r'\btrackid\b': '"TrackId"',
+        r'\binvoiceid\b': '"InvoiceId"',
+        r'\bcustomerid\b': '"CustomerId"',
+        r'\balbumid\b': '"AlbumId"',
+        r'\bartistid\b': '"ArtistId"',
+        r'\bgenreid\b': '"GenreId"',
+        r'\bplaylistid\b': '"PlaylistId"',
+        r'\bemployeeid\b': '"EmployeeId"',
+        r'\bmediatypeid\b': '"MediaTypeId"',
+        r'\bquantity\b': '"Quantity"',
+        r'\bunitprice\b': '"UnitPrice"',
+        r'\btotal\b': '"Total"',
+        r'\binvoicedate\b': '"InvoiceDate"',
+        r'\bbirthdate\b': '"BirthDate"',
+        r'\bhiredate\b': '"HireDate"',
+    }
+    
+    for pattern, replacement in column_mapping.items():
+        sql = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
+    
+    return sql
+
 # ---------- Database Connection ----------
 def get_db_connection():
     """Returns a PostgreSQL connection using secrets."""
@@ -34,8 +79,8 @@ def get_table_schema(conn):
                 WHERE table_name=%s;
             """, (table,))
             cols = cur.fetchall()
-            cols_str = ", ".join([f"{c[0]} {c[1]}" for c in cols])
-            schema_info.append(f"Table: {table} ({cols_str})")
+            cols_str = ", ".join([f'"{c[0]}" {c[1]}' for c in cols])
+            schema_info.append(f'Table: "{table}" ({cols_str})')
     return "\n".join(schema_info)
 
 # ---------- Initialize Gemini ----------
@@ -43,7 +88,6 @@ def init_gemini():
     """Setup Gemini API with error handling."""
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        # Gunakan model yang benar - 'gemini-1.5-flash' atau 'gemini-pro'
         model = genai.GenerativeModel('gemini-2.5-flash')
         return model
     except Exception as e:
@@ -59,15 +103,28 @@ def generate_sql(question, schema, conversation_history, model):
     # Build prompt with conversation memory
     prompt = f"""
 You are an expert at converting natural language questions into **PostgreSQL** queries.
-Use the following database schema (Chinook sample DB):
 
+⚠️ CRITICAL: This PostgreSQL database is CASE-SENSITIVE!
+All table and column names use PascalCase (first letter of each word capitalized).
+You MUST use double quotes around ALL table and column names.
+
+Here is the exact database schema (use these names with double quotes):
 {schema}
 
+Examples of correct syntax:
+- SELECT "Name" FROM "Track" WHERE "TrackId" = 1
+- SELECT SUM("Quantity") FROM "InvoiceLine" GROUP BY "TrackId"
+
 Rules:
-- Only output the SQL query, no extra text, no markdown formatting.
-- Use double quotes for table/column names if they contain mixed case.
-- Always use LIMIT 10 unless the question asks for a specific number.
-- For questions about "top X", use ORDER BY and LIMIT X.
+- ONLY output the SQL query, no extra text, no markdown formatting.
+- ALWAYS wrap table names in double quotes: "Track", "InvoiceLine", "Customer"
+- ALWAYS wrap column names in double quotes: "TrackId", "Name", "Quantity"
+- Use LIMIT 10 unless the question asks for a specific number.
+- For "top X best-selling tracks by quantity":
+  * Join "InvoiceLine" with "Track" on "TrackId"
+  * Group by "Track"."Name"
+  * Order by SUM("InvoiceLine"."Quantity") DESC
+  * Then LIMIT X
 
 Previous conversation (for context):
 """
@@ -85,6 +142,9 @@ Previous conversation (for context):
         sql = re.sub(r'^```sql\n?', '', sql)
         sql = re.sub(r'^```\n?', '', sql)
         sql = re.sub(r'\n?```$', '', sql)
+        
+        # Auto-fix case-sensitive table/column names
+        sql = normalize_table_names(sql)
         
         return sql
     except Exception as e:
@@ -114,13 +174,23 @@ def correct_sql(question, sql, error_msg, schema, model):
         return None
         
     prompt = f"""
-The following SQL query failed with an error.
-Question: {question}
-Failed SQL: {sql}
-Error: {error_msg}
-Schema: {schema}
+The following SQL query failed with a PostgreSQL error.
 
-Please provide a corrected PostgreSQL query. Output only the SQL, no explanation.
+⚠️ REMEMBER: This database is CASE-SENSITIVE. Use double quotes around ALL table and column names.
+
+Database schema (use exact names with double quotes):
+{schema}
+
+Original question: {question}
+Failed SQL: {sql}
+Error message: {error_msg}
+
+Please provide a corrected PostgreSQL query that fixes the error.
+Rules:
+- Wrap ALL table names in double quotes: "InvoiceLine" (NOT InvoiceLine or invoiceline)
+- Wrap ALL column names in double quotes: "TrackId", "Quantity", "Name"
+- Output ONLY the SQL, no explanation.
+
 Corrected SQL:
 """
     try:
@@ -129,6 +199,10 @@ Corrected SQL:
         new_sql = re.sub(r'^```sql\n?', '', new_sql)
         new_sql = re.sub(r'^```\n?', '', new_sql)
         new_sql = re.sub(r'\n?```$', '', new_sql)
+        
+        # Auto-fix case-sensitive table/column names
+        new_sql = normalize_table_names(new_sql)
+        
         return new_sql
     except Exception as e:
         st.error(f"Gemini API error (correct_sql): {e}")

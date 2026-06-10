@@ -3,7 +3,7 @@
 Ask questions about a PostgreSQL database in plain English – AI converts them to SQL, executes, and explains results.
 
 ## Live Demo
-[Link to your Streamlit app]
+[\[Link to your Streamlit app\]](https://shz1993-natural-language-sql-agent-project-build-app-r01ojk.streamlit.app/)
 
 ## Features
 - Chat interface with memory

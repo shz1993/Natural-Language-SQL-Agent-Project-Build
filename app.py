@@ -44,7 +44,7 @@ def init_gemini():
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         # Gunakan model yang benar - 'gemini-1.5-flash' atau 'gemini-pro'
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         return model
     except Exception as e:
         st.error(f"Failed to initialize Gemini: {e}")
@@ -168,7 +168,7 @@ def main():
     st.set_page_config(page_title="AI SQL Agent", layout="wide")
     st.title("🗄️ Natural Language SQL Agent")
     st.markdown("Ask questions about the **Chinook** music store database (tracks, artists, customers, invoices, etc.)")
-    st.info("🤖 Using **Google Gemini 1.5 Flash** (free tier) - 60 requests per minute")
+    st.info("🤖 Using **Google Gemini 2.5 Flash** (free tier) - 60 requests per minute")
     
     # Initialize Gemini
     if "gemini_model" not in st.session_state:

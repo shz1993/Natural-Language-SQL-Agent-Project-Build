@@ -1,5 +1,5 @@
 import streamlit as st
-import psycop2
+import psycopg2
 import pandas as pd
 import re
 import google.generativeai as genai

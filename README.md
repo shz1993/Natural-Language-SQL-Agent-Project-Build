@@ -13,7 +13,7 @@ Ask questions about a PostgreSQL database in plain English – AI converts them 
 
 ## Tech Stack
 - Streamlit (frontend)
-- OpenAI GPT-3.5-turbo (LLM)
+- Gemini AI
 - PostgreSQL (Neon)
 - Psycopg2, Pandas
 

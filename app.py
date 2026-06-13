@@ -24,7 +24,13 @@ def generate_sql(question, client):
     if client is None:
         return None
     
-    prompt = f"""Convert to PostgreSQL SQL. ALL TABLES ARE LOWERCASE: track, invoiceline, album, artist.
+    prompt = f"""Convert to PostgreSQL SQL. ALL TABLES AND COLUMNS ARE LOWERCASE.
+
+Tables: track, invoiceline, album, artist, customer, genre, invoice.
+
+IMPORTANT: 
+- Table names: track, invoiceline, album, artist
+- Column names: trackid, name, quantity, unitprice, albumid, artistid
 
 Question: {question}
 
@@ -35,7 +41,7 @@ GROUP BY track.name
 ORDER BY total_sold DESC 
 LIMIT 5;
 
-Return ONLY SQL. No markdown. Use lowercase names.
+Return ONLY the SQL query. No explanations. No markdown. Use lowercase.
 
 SQL:"""
     
@@ -50,9 +56,9 @@ SQL:"""
         sql = re.sub(r'^```sql\n?', '', sql)
         sql = re.sub(r'^```\n?', '', sql)
         sql = re.sub(r'\n?```$', '', sql)
-        # Remove any quotes
         sql = sql.replace('"', '')
-        return sql.lower()
+        sql = sql.lower()
+        return sql
     except Exception as e:
         st.error(f"Groq error: {e}")
         return None
@@ -84,7 +90,7 @@ def main():
             st.success("✅ Connected to database!")
             
             with st.sidebar:
-                st.write("📋 Database Tables (lowercase):")
+                st.write("📋 Database Tables:")
                 tables = ['track', 'invoiceline', 'album', 'artist', 'customer', 'genre', 'invoice']
                 for table in tables:
                     st.write(f"  - {table}")
@@ -112,6 +118,11 @@ def main():
             
             if sql:
                 st.caption(f"🔍 SQL: `{sql}`")
+                
+                try:
+                    st.session_state.conn.rollback()
+                except:
+                    pass
                 
                 success, result = execute_sql(st.session_state.conn, sql)
                 

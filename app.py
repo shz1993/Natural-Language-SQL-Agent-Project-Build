@@ -21,8 +21,8 @@ def get_table_schema(conn):
         for (table,) in tables:
             cur.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name=%s;", (table,))
             cols = cur.fetchall()
-            cols_str = ", ".join([f'"{c[0]}" {c[1]}' for c in cols])
-            schema_info.append(f'Table: "{table}" ({cols_str})')
+            cols_str = ", ".join([f"{c[0]} {c[1]}" for c in cols])
+            schema_info.append(f"Table: {table} ({cols_str})")
     return "\n".join(schema_info)
 
 def init_groq():
@@ -42,7 +42,7 @@ def generate_sql(question, schema, conversation_history, client):
     
     prompt = f"""You are an expert at converting natural language questions into PostgreSQL queries.
 
-IMPORTANT: This database is CASE-SENSITIVE. Always use double quotes around table and column names.
+IMPORTANT: This database uses LOWERCASE table and column names. Do NOT use quotes.
 
 Schema:
 {schema}
@@ -51,16 +51,17 @@ Previous conversation:
 {history_text}
 
 Example:
-SELECT "Track"."Name", SUM("InvoiceLine"."Quantity") as total_sold
-FROM "InvoiceLine"
-JOIN "Track" ON "InvoiceLine"."TrackId" = "Track"."TrackId"
-GROUP BY "Track"."Name"
+SELECT track.name, SUM(invoiceline.quantity) as total_sold
+FROM invoiceline
+JOIN track ON invoiceline.trackid = track.trackid
+GROUP BY track.name
 ORDER BY total_sold DESC
 LIMIT 5;
 
 Rules:
 - ONLY output the SQL query, no extra text
-- ALWAYS use double quotes " around table and column names
+- Use LOWERCASE table and column names
+- Do NOT use double quotes
 - Use LIMIT 10 unless specified
 
 User question: {question}
@@ -77,6 +78,8 @@ SQL:"""
         sql = re.sub(r'^```sql\n?', '', sql)
         sql = re.sub(r'^```\n?', '', sql)
         sql = re.sub(r'\n?```$', '', sql)
+        sql = sql.replace('"', '')  # Remove all double quotes
+        sql = sql.lower()  # Convert to lowercase
         return sql
     except Exception as e:
         st.error(f"Groq API error: {e}")
@@ -103,16 +106,17 @@ def correct_sql(question, sql, error_msg, schema, client):
         
     prompt = f"""The following SQL query failed. Fix it.
 
-IMPORTANT: Use double quotes around table and column names like "InvoiceLine", "Track".
+IMPORTANT: Use LOWERCASE table names like: invoiceline, track, album.
+Do NOT use quotes or CamelCase.
 
 Question: {question}
 Failed SQL: {sql}
 Error: {error_msg}
 
-Schema (use exact names with quotes):
+Schema:
 {schema}
 
-Output only the corrected SQL:"""
+Output only the corrected SQL in lowercase:"""
     
     try:
         response = client.chat.completions.create(
@@ -125,6 +129,8 @@ Output only the corrected SQL:"""
         new_sql = re.sub(r'^```sql\n?', '', new_sql)
         new_sql = re.sub(r'^```\n?', '', new_sql)
         new_sql = re.sub(r'\n?```$', '', new_sql)
+        new_sql = new_sql.replace('"', '')
+        new_sql = new_sql.lower()
         return new_sql
     except Exception as e:
         st.error(f"Groq API error: {e}")

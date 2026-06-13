@@ -10,7 +10,8 @@ def get_db_connection():
         port=st.secrets["POSTGRES_PORT"],
         database=st.secrets["POSTGRES_DB"],
         user=st.secrets["POSTGRES_USER"],
-        password=st.secrets["POSTGRES_PASSWORD"]
+        password=st.secrets["POSTGRES_PASSWORD"],
+        options="-c search_path=public"  # FORCE public schema
     )
 
 def get_table_schema(conn):
@@ -36,11 +37,13 @@ def generate_sql(question, schema, conversation_history, client):
     if client is None:
         return None
     
-    prompt = f"""Convert this question to PostgreSQL SQL. Use lowercase table names: track, invoiceline, album, artist.
+    prompt = f"""Convert to PostgreSQL SQL. Tables: album, artist, track, invoiceline, customer, employee, genre, invoice, mediatype, playlist, playlisttrack. All lowercase.
 
 Question: {question}
 
-IMPORTANT: Return ONLY the SQL query. No explanations, no markdown, no extra text. Just the SQL.
+Example: SELECT track.name, SUM(invoiceline.quantity) as total_sold FROM invoiceline JOIN track ON invoiceline.trackid = track.trackid GROUP BY track.name ORDER BY total_sold DESC LIMIT 5;
+
+Return ONLY the SQL. No explanation. No markdown.
 
 SQL:"""
     
@@ -55,15 +58,7 @@ SQL:"""
         sql = re.sub(r'^```sql\n?', '', sql)
         sql = re.sub(r'^```\n?', '', sql)
         sql = re.sub(r'\n?```$', '', sql)
-        
-        if not sql.lower().startswith(('select', 'with', 'insert', 'update', 'delete')):
-            match = re.search(r'(select|with|insert|update|delete).+?;', sql, re.IGNORECASE | re.DOTALL)
-            if match:
-                sql = match.group(0)
-            else:
-                return None
-        
-        return sql.strip()
+        return sql
     except Exception as e:
         st.error(f"Groq API error: {e}")
         return None
@@ -71,8 +66,11 @@ SQL:"""
 def execute_sql(conn, sql):
     try:
         with conn.cursor() as cur:
-            cur.execute(sql)
-            if sql.strip().upper().startswith("SELECT"):
+            # Tambahkan schema public ke tabel
+            sql_fixed = re.sub(r'\b(track|invoiceline|album|artist|customer|employee|genre|invoice|mediatype|playlist|playlisttrack)\b', r'public.\1', sql, flags=re.IGNORECASE)
+            
+            cur.execute(sql_fixed)
+            if sql_fixed.strip().upper().startswith("SELECT"):
                 rows = cur.fetchall()
                 colnames = [desc[0] for desc in cur.description]
                 df = pd.DataFrame(rows, columns=colnames)
@@ -87,17 +85,13 @@ def correct_sql(question, sql, error_msg, schema, client):
     if client is None:
         return None
         
-    prompt = f"""The SQL query failed. Fix it.
+    prompt = f"""Fix this SQL. Use tables: public.track, public.invoiceline, public.album, public.artist.
 
 Failed SQL: {sql}
 Error: {error_msg}
 Question: {question}
 
-Use lowercase: track, invoiceline, album, artist.
-
-IMPORTANT: Return ONLY the corrected SQL. No explanations.
-
-Corrected SQL:"""
+Return ONLY the corrected SQL:"""
     
     try:
         response = client.chat.completions.create(
@@ -110,15 +104,7 @@ Corrected SQL:"""
         new_sql = re.sub(r'^```sql\n?', '', new_sql)
         new_sql = re.sub(r'^```\n?', '', new_sql)
         new_sql = re.sub(r'\n?```$', '', new_sql)
-        
-        if not new_sql.lower().startswith(('select', 'with', 'insert', 'update', 'delete')):
-            match = re.search(r'(select|with|insert|update|delete).+?;', new_sql, re.IGNORECASE | re.DOTALL)
-            if match:
-                new_sql = match.group(0)
-            else:
-                return None
-        
-        return new_sql.strip()
+        return new_sql
     except Exception as e:
         st.error(f"Groq API error: {e}")
         return None

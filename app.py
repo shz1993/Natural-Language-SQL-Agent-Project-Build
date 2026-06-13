@@ -20,30 +20,60 @@ def init_groq():
         st.error(f"Failed to initialize Groq: {e}")
         return None
 
+def add_quotes_to_tables(sql):
+    """Add double quotes around table names that need them."""
+    # Mapping lowercase to proper case with quotes
+    tables = {
+        'track': '"Track"',
+        'invoiceline': '"InvoiceLine"',
+        'album': '"Album"',
+        'artist': '"Artist"',
+        'customer': '"Customer"',
+        'employee': '"Employee"',
+        'genre': '"Genre"',
+        'invoice': '"Invoice"',
+        'mediatype': '"MediaType"',
+        'playlist': '"Playlist"',
+        'playlisttrack': '"PlaylistTrack"'
+    }
+    
+    for lower, quoted in tables.items():
+        sql = re.sub(rf'\b{lower}\b', quoted, sql, flags=re.IGNORECASE)
+    
+    # Also fix column names
+    columns = {
+        'trackid': '"TrackId"',
+        'albumid': '"AlbumId"',
+        'artistid': '"ArtistId"',
+        'customerid': '"CustomerId"',
+        'invoiceid': '"InvoiceId"',
+        'quantity': '"Quantity"',
+        'name': '"Name"',
+        'title': '"Title"',
+        'composer': '"Composer"'
+    }
+    
+    for lower, quoted in columns.items():
+        sql = re.sub(rf'\b{lower}\b', quoted, sql, flags=re.IGNORECASE)
+    
+    return sql
+
 def generate_sql(question, client):
     if client is None:
         return None
     
-    prompt = f"""You are a PostgreSQL expert. Convert this question to SQL.
-
-Database has these tables (all lowercase):
-- track (columns: trackid, name, albumid, composer, unitprice)
-- invoiceline (columns: invoicelineid, invoiceid, trackid, quantity, unitprice)
-- album (columns: albumid, title, artistid)
-- artist (columns: artistid, name)
-- customer (columns: customerid, firstname, lastname, email)
+    prompt = f"""Convert to PostgreSQL SQL. Use exact table names: "Track", "InvoiceLine", "Album", "Artist".
 
 Question: {question}
 
-Example: "show me top 5 best selling tracks" → 
-SELECT track.name, SUM(invoiceline.quantity) as total_sold 
-FROM invoiceline 
-JOIN track ON invoiceline.trackid = track.trackid 
-GROUP BY track.name 
+Example: SELECT "Track"."Name", SUM("InvoiceLine"."Quantity") as total_sold 
+FROM "InvoiceLine" 
+JOIN "Track" ON "InvoiceLine"."TrackId" = "Track"."TrackId" 
+GROUP BY "Track"."Name" 
 ORDER BY total_sold DESC 
 LIMIT 5;
 
-Return ONLY the SQL query. No explanations. No markdown.
+Return ONLY SQL. No explanations.
 
 SQL:"""
     
@@ -91,7 +121,7 @@ def main():
             
             with st.sidebar:
                 st.write("📋 Database Tables:")
-                tables = ['album', 'artist', 'track', 'invoiceline', 'customer', 'genre', 'invoice', 'mediatype', 'playlist', 'playlisttrack']
+                tables = ['"Track"', '"InvoiceLine"', '"Album"', '"Artist"', '"Customer"']
                 for table in tables:
                     st.write(f"  - {table}")
         except Exception as e:
@@ -117,32 +147,28 @@ def main():
             sql = generate_sql(user_question, st.session_state.groq_client)
             
             if sql:
-                st.caption(f"🔍 SQL: `{sql}`")
-                success, result = execute_sql(st.session_state.conn, sql)
+                # Add quotes to table names
+                sql_fixed = add_quotes_to_tables(sql)
+                st.caption(f"🔍 SQL: `{sql_fixed}`")
+                
+                success, result = execute_sql(st.session_state.conn, sql_fixed)
                 
                 if success and isinstance(result, pd.DataFrame):
-                    st.success(f"✅ {len(result)} rows found")
+                    answer = f"Found {len(result)} results"
                     st.dataframe(result)
-                    
-                    # Simple English answer
-                    if not result.empty and len(result.columns) >= 2:
-                        first_col = result.columns[0]
-                        second_col = result.columns[1]
-                        answer = f"The top results are: {result.iloc[0][first_col]} with {result.iloc[0][second_col]}, {result.iloc[1][first_col]} with {result.iloc[1][second_col]}, etc."
-                        with st.chat_message("assistant"):
-                            st.write(answer)
-                        st.session_state.messages.append((user_question, answer))
+                    with st.chat_message("assistant"):
+                        st.write(answer)
+                    st.session_state.messages.append((user_question, answer))
                 elif success:
                     st.success("Query executed successfully")
                     st.session_state.messages.append((user_question, "Query executed successfully"))
                 else:
                     st.error(f"SQL Error: {result}")
                     with st.chat_message("assistant"):
-                        st.write(f"Sorry, there was an error: {result}")
+                        st.write(f"Error: {result}")
                     st.session_state.messages.append((user_question, f"Error: {result}"))
             else:
                 st.error("Failed to generate SQL")
-                st.session_state.messages.append((user_question, "Failed to generate SQL"))
 
 if __name__ == "__main__":
     main()

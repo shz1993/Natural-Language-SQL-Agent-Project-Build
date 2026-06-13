@@ -13,18 +13,6 @@ def get_db_connection():
         password=st.secrets["POSTGRES_PASSWORD"]
     )
 
-def get_table_schema(conn):
-    schema_info = []
-    with conn.cursor() as cur:
-        cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name;")
-        tables = cur.fetchall()
-        for (table,) in tables:
-            cur.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name=%s;", (table,))
-            cols = cur.fetchall()
-            cols_str = ", ".join([f"{c[0]} {c[1]}" for c in cols])
-            schema_info.append(f"Table: {table} ({cols_str})")
-    return "\n".join(schema_info)
-
 def init_groq():
     try:
         return Groq(api_key=st.secrets["GROQ_API_KEY"])
@@ -32,17 +20,30 @@ def init_groq():
         st.error(f"Failed to initialize Groq: {e}")
         return None
 
-def generate_sql(question, schema, conversation_history, client):
+def generate_sql(question, client):
     if client is None:
         return None
     
-    prompt = f"""Convert to PostgreSQL SQL. Tables: album, artist, track, invoiceline, customer, employee, genre, invoice, mediatype, playlist, playlisttrack. All lowercase.
+    prompt = f"""You are a PostgreSQL expert. Convert this question to SQL.
+
+Database has these tables (all lowercase):
+- track (columns: trackid, name, albumid, composer, unitprice)
+- invoiceline (columns: invoicelineid, invoiceid, trackid, quantity, unitprice)
+- album (columns: albumid, title, artistid)
+- artist (columns: artistid, name)
+- customer (columns: customerid, firstname, lastname, email)
 
 Question: {question}
 
-Example: SELECT track.name, SUM(invoiceline.quantity) as total_sold FROM invoiceline JOIN track ON invoiceline.trackid = track.trackid GROUP BY track.name ORDER BY total_sold DESC LIMIT 5;
+Example: "show me top 5 best selling tracks" → 
+SELECT track.name, SUM(invoiceline.quantity) as total_sold 
+FROM invoiceline 
+JOIN track ON invoiceline.trackid = track.trackid 
+GROUP BY track.name 
+ORDER BY total_sold DESC 
+LIMIT 5;
 
-Return ONLY the SQL. No explanation. No markdown.
+Return ONLY the SQL query. No explanations. No markdown.
 
 SQL:"""
     
@@ -59,69 +60,19 @@ SQL:"""
         sql = re.sub(r'\n?```$', '', sql)
         return sql
     except Exception as e:
-        st.error(f"Groq API error: {e}")
+        st.error(f"Groq error: {e}")
         return None
 
 def execute_sql(conn, sql):
     try:
         with conn.cursor() as cur:
             cur.execute(sql)
-            if sql.strip().upper().startswith("SELECT"):
-                rows = cur.fetchall()
-                colnames = [desc[0] for desc in cur.description]
-                df = pd.DataFrame(rows, columns=colnames)
-                return True, df
-            else:
-                conn.commit()
-                return True, "Query executed successfully."
+            rows = cur.fetchall()
+            colnames = [desc[0] for desc in cur.description] if cur.description else []
+            df = pd.DataFrame(rows, columns=colnames)
+            return True, df
     except Exception as e:
         return False, str(e)
-
-def correct_sql(question, sql, error_msg, schema, client):
-    if client is None:
-        return None
-        
-    prompt = f"""Fix this SQL. Use lowercase table names: track, invoiceline, album, artist.
-
-Failed SQL: {sql}
-Error: {error_msg}
-Question: {question}
-
-Return ONLY the corrected SQL:"""
-    
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=300
-        )
-        new_sql = response.choices[0].message.content.strip()
-        new_sql = re.sub(r'^```sql\n?', '', new_sql)
-        new_sql = re.sub(r'^```\n?', '', new_sql)
-        new_sql = re.sub(r'\n?```$', '', new_sql)
-        return new_sql
-    except Exception as e:
-        st.error(f"Groq API error: {e}")
-        return None
-
-def result_to_english(question, sql, result_df, client):
-    if client is None or result_df.empty:
-        return "No results found." if result_df.empty else "AI not available."
-    
-    result_str = result_df.head(10).to_string()
-    prompt = f"Question: {question}\nResult:\n{result_str}\nAnswer in one sentence:"
-    
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=150
-        )
-        return response.choices[0].message.content.strip()
-    except Exception:
-        return f"Results:\n{result_str}"
 
 def main():
     st.set_page_config(page_title="AI SQL Agent", layout="wide")
@@ -133,25 +84,22 @@ def main():
         if st.session_state.groq_client is None:
             st.stop()
     
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    
     if "conn" not in st.session_state:
         try:
             st.session_state.conn = get_db_connection()
-            st.session_state.schema = get_table_schema(st.session_state.conn)
             st.success("✅ Connected to database!")
             
             with st.sidebar:
                 st.write("📋 Database Tables:")
-                tables = ['album', 'artist', 'customer', 'employee', 'genre', 
-                         'invoice', 'invoiceline', 'mediatype', 'playlist', 
-                         'playlisttrack', 'track']
+                tables = ['album', 'artist', 'track', 'invoiceline', 'customer', 'genre', 'invoice', 'mediatype', 'playlist', 'playlisttrack']
                 for table in tables:
                     st.write(f"  - {table}")
         except Exception as e:
             st.error(f"Database error: {e}")
             st.stop()
+    
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
     
     for user_q, assistant_a in st.session_state.messages:
         with st.chat_message("user"):
@@ -160,56 +108,41 @@ def main():
             st.write(assistant_a)
     
     user_question = st.chat_input("Ask something like: Show me the top 5 best-selling tracks")
+    
     if user_question:
         with st.chat_message("user"):
             st.write(user_question)
         
         with st.spinner("Generating SQL..."):
-            sql = generate_sql(user_question, st.session_state.schema, 
-                              st.session_state.messages, st.session_state.groq_client)
+            sql = generate_sql(user_question, st.session_state.groq_client)
             
             if sql:
                 st.caption(f"🔍 SQL: `{sql}`")
-                
-                try:
-                    st.session_state.conn.rollback()
-                except:
-                    pass
-                
                 success, result = execute_sql(st.session_state.conn, sql)
                 
-                attempts = 1
-                while not success and attempts < 3:
-                    st.warning(f"Error: {result}. Fixing...")
-                    sql = correct_sql(user_question, sql, result, 
-                                     st.session_state.schema, st.session_state.groq_client)
-                    if sql:
-                        st.caption(f"🛠️ Fixed SQL: `{sql}`")
-                        try:
-                            st.session_state.conn.rollback()
-                        except:
-                            pass
-                        success, result = execute_sql(st.session_state.conn, sql)
-                    attempts += 1
-                
                 if success and isinstance(result, pd.DataFrame):
-                    answer = result_to_english(user_question, sql, result, st.session_state.groq_client)
-                    with st.expander("📊 Data"):
-                        st.dataframe(result)
+                    st.success(f"✅ {len(result)} rows found")
+                    st.dataframe(result)
+                    
+                    # Simple English answer
+                    if not result.empty and len(result.columns) >= 2:
+                        first_col = result.columns[0]
+                        second_col = result.columns[1]
+                        answer = f"The top results are: {result.iloc[0][first_col]} with {result.iloc[0][second_col]}, {result.iloc[1][first_col]} with {result.iloc[1][second_col]}, etc."
+                        with st.chat_message("assistant"):
+                            st.write(answer)
+                        st.session_state.messages.append((user_question, answer))
                 elif success:
-                    answer = str(result)
+                    st.success("Query executed successfully")
+                    st.session_state.messages.append((user_question, "Query executed successfully"))
                 else:
-                    answer = f"Failed: {result}"
+                    st.error(f"SQL Error: {result}")
+                    with st.chat_message("assistant"):
+                        st.write(f"Sorry, there was an error: {result}")
+                    st.session_state.messages.append((user_question, f"Error: {result}"))
             else:
-                answer = "Failed to generate SQL."
-        
-        with st.chat_message("assistant"):
-            st.write(answer)
-        
-        st.session_state.messages.append((user_question, answer))
-        
-        if len(st.session_state.messages) > 10:
-            st.session_state.messages = st.session_state.messages[-10:]
+                st.error("Failed to generate SQL")
+                st.session_state.messages.append((user_question, "Failed to generate SQL"))
 
 if __name__ == "__main__":
     main()

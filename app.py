@@ -4,9 +4,7 @@ import pandas as pd
 import re
 from groq import Groq
 
-# ---------- Database Connection ----------
 def get_db_connection():
-    """Returns a PostgreSQL connection using secrets."""
     return psycopg2.connect(
         host=st.secrets["POSTGRES_HOST"],
         port=st.secrets["POSTGRES_PORT"],
@@ -15,60 +13,26 @@ def get_db_connection():
         password=st.secrets["POSTGRES_PASSWORD"]
     )
 
-# ---------- Schema Fetching ----------
 def get_table_schema(conn):
-    """Fetch all table names and their columns for Chinook database."""
     schema_info = []
     with conn.cursor() as cur:
-        cur.execute("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_schema='public'
-            ORDER BY table_name;
-        """)
+        cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name;")
         tables = cur.fetchall()
         for (table,) in tables:
-            cur.execute("""
-                SELECT column_name, data_type 
-                FROM information_schema.columns 
-                WHERE table_name=%s;
-            """, (table,))
+            cur.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name=%s;", (table,))
             cols = cur.fetchall()
-            cols_str = ", ".join([f"{c[0]} {c[1]}" for c in cols])
-            schema_info.append(f"Table: {table} ({cols_str})")
+            cols_str = ", ".join([f'"{c[0]}" {c[1]}' for c in cols])
+            schema_info.append(f'Table: "{table}" ({cols_str})')
     return "\n".join(schema_info)
 
-# ---------- Initialize Groq ----------
 def init_groq():
-    """Setup Groq API with error handling."""
     try:
-        client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-        return client
+        return Groq(api_key=st.secrets["GROQ_API_KEY"])
     except Exception as e:
         st.error(f"Failed to initialize Groq: {e}")
         return None
 
-# ---------- Helper: Convert to lowercase ----------
-def fix_table_names(sql):
-    """Convert CamelCase table names to lowercase."""
-    tables = ['Album', 'Artist', 'Customer', 'Employee', 'Genre', 
-              'Invoice', 'InvoiceLine', 'MediaType', 'Playlist', 
-              'PlaylistTrack', 'Track']
-    
-    for table in tables:
-        sql = re.sub(rf'\b{table}\b', table.lower(), sql, flags=re.IGNORECASE)
-    
-    columns = ['TrackId', 'AlbumId', 'ArtistId', 'CustomerId', 
-               'InvoiceId', 'GenreId', 'PlaylistId', 'Quantity', 'Total']
-    
-    for col in columns:
-        sql = re.sub(rf'\b{col}\b', col.lower(), sql, flags=re.IGNORECASE)
-    
-    return sql
-
-# ---------- LLM: Natural Language -> SQL ----------
 def generate_sql(question, schema, conversation_history, client):
-    """Ask Groq to generate a valid PostgreSQL query."""
     if client is None:
         return None
     
@@ -78,7 +42,7 @@ def generate_sql(question, schema, conversation_history, client):
     
     prompt = f"""You are an expert at converting natural language questions into PostgreSQL queries.
 
-IMPORTANT: This database uses LOWERCASE table and column names.
+IMPORTANT: This database is CASE-SENSITIVE. Always use double quotes around table and column names.
 
 Schema:
 {schema}
@@ -87,16 +51,16 @@ Previous conversation:
 {history_text}
 
 Example:
-SELECT track.name, SUM(invoiceline.quantity) as total_sold
-FROM invoiceline
-JOIN track ON invoiceline.trackid = track.trackid
-GROUP BY track.name
+SELECT "Track"."Name", SUM("InvoiceLine"."Quantity") as total_sold
+FROM "InvoiceLine"
+JOIN "Track" ON "InvoiceLine"."TrackId" = "Track"."TrackId"
+GROUP BY "Track"."Name"
 ORDER BY total_sold DESC
 LIMIT 5;
 
 Rules:
 - ONLY output the SQL query, no extra text
-- Use LOWERCASE table and column names
+- ALWAYS use double quotes " around table and column names
 - Use LIMIT 10 unless specified
 
 User question: {question}
@@ -113,15 +77,12 @@ SQL:"""
         sql = re.sub(r'^```sql\n?', '', sql)
         sql = re.sub(r'^```\n?', '', sql)
         sql = re.sub(r'\n?```$', '', sql)
-        sql = fix_table_names(sql)
         return sql
     except Exception as e:
         st.error(f"Groq API error: {e}")
         return None
 
-# ---------- SQL Execution ----------
 def execute_sql(conn, sql):
-    """Run SQL and return (success, result/error)."""
     try:
         with conn.cursor() as cur:
             cur.execute(sql)
@@ -132,24 +93,23 @@ def execute_sql(conn, sql):
                 return True, df
             else:
                 conn.commit()
-                return True, f"Query executed successfully."
+                return True, "Query executed successfully."
     except Exception as e:
         return False, str(e)
 
 def correct_sql(question, sql, error_msg, schema, client):
-    """Ask Groq to fix the SQL based on the error."""
     if client is None:
         return None
         
     prompt = f"""The following SQL query failed. Fix it.
 
-IMPORTANT: Use LOWERCASE table names like: invoiceline, track, album.
+IMPORTANT: Use double quotes around table and column names like "InvoiceLine", "Track".
 
 Question: {question}
 Failed SQL: {sql}
 Error: {error_msg}
 
-Schema (use lowercase):
+Schema (use exact names with quotes):
 {schema}
 
 Output only the corrected SQL:"""
@@ -165,25 +125,17 @@ Output only the corrected SQL:"""
         new_sql = re.sub(r'^```sql\n?', '', new_sql)
         new_sql = re.sub(r'^```\n?', '', new_sql)
         new_sql = re.sub(r'\n?```$', '', new_sql)
-        new_sql = fix_table_names(new_sql)
         return new_sql
     except Exception as e:
         st.error(f"Groq API error: {e}")
         return None
 
-# ---------- Result to English ----------
 def result_to_english(question, sql, result_df, client):
-    """Convert the query result into a plain English answer."""
     if client is None or result_df.empty:
         return "No results found." if result_df.empty else "AI not available."
     
     result_str = result_df.head(10).to_string()
-    
-    prompt = f"""Question: {question}
-Result:
-{result_str}
-
-Answer in one English sentence:"""
+    prompt = f"Question: {question}\nResult:\n{result_str}\nAnswer in one English sentence:"
     
     try:
         response = client.chat.completions.create(
@@ -196,13 +148,11 @@ Answer in one English sentence:"""
     except Exception:
         return f"Results:\n{result_str}"
 
-# ---------- Main App ----------
 def main():
     st.set_page_config(page_title="AI SQL Agent", layout="wide")
     st.title("🗄️ Natural Language SQL Agent")
     st.info("🤖 Using Groq Llama 3 (100% Free)")
     
-    # Initialize
     if "groq_client" not in st.session_state:
         st.session_state.groq_client = init_groq()
         if st.session_state.groq_client is None:
@@ -217,26 +167,23 @@ def main():
             st.session_state.schema = get_table_schema(st.session_state.conn)
             st.success("✅ Connected to database!")
             
-            # Show tables in sidebar
             with st.sidebar:
                 st.write("📋 Database Tables:")
-                manual_tables = ['album', 'artist', 'customer', 'employee', 'genre', 
-                                 'invoice', 'invoiceline', 'mediatype', 'playlist', 
-                                 'playlisttrack', 'track']
-                for table in manual_tables:
-                    st.write(f"  - {table}")
+                cur = st.session_state.conn.cursor()
+                cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name;")
+                for table in cur.fetchall():
+                    st.write(f"  - {table[0]}")
+                cur.close()
         except Exception as e:
             st.error(f"Database error: {e}")
             st.stop()
     
-    # Chat history
     for user_q, assistant_a in st.session_state.messages:
         with st.chat_message("user"):
             st.write(user_q)
         with st.chat_message("assistant"):
             st.write(assistant_a)
     
-    # Input
     user_question = st.chat_input("Ask something like: Show me the top 5 best-selling tracks")
     if user_question:
         with st.chat_message("user"):
@@ -248,6 +195,13 @@ def main():
             
             if sql:
                 st.caption(f"🔍 SQL: `{sql}`")
+                
+                # Reset transaction jika ada error sebelumnya
+                try:
+                    st.session_state.conn.rollback()
+                except:
+                    pass
+                
                 success, result = execute_sql(st.session_state.conn, sql)
                 
                 attempts = 1
@@ -257,6 +211,10 @@ def main():
                                      st.session_state.schema, st.session_state.groq_client)
                     if sql:
                         st.caption(f"🛠️ Fixed SQL: `{sql}`")
+                        try:
+                            st.session_state.conn.rollback()
+                        except:
+                            pass
                         success, result = execute_sql(st.session_state.conn, sql)
                     attempts += 1
                 

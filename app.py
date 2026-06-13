@@ -194,7 +194,17 @@ def main():
         try:
             st.session_state.conn = get_db_connection()
             st.session_state.schema = get_table_schema(st.session_state.conn)
-            st.session_state.actual_tables = get_actual_tables(st.session_state.conn)
+            
+            # Get actual tables
+            try:
+                cur = st.session_state.conn.cursor()
+                cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name;")
+                tables = cur.fetchall()
+                st.session_state.actual_tables = [t[0] for t in tables] if tables else ['album', 'artist', 'customer', 'employee', 'genre', 'invoice', 'invoiceline', 'mediatype', 'playlist', 'playlisttrack', 'track']
+                cur.close()
+            except:
+                st.session_state.actual_tables = ['album', 'artist', 'customer', 'employee', 'genre', 'invoice', 'invoiceline', 'mediatype', 'playlist', 'playlisttrack', 'track']
+            
             st.success("✅ Connected to database!")
             
             # Show tables in sidebar

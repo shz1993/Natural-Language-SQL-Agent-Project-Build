@@ -4,7 +4,6 @@ import pandas as pd
 import re
 from groq import Groq
 
-# ---------- Database Connection ----------
 def get_db_connection():
     return psycopg2.connect(
         host=st.secrets["POSTGRES_HOST"],
@@ -14,7 +13,6 @@ def get_db_connection():
         password=st.secrets["POSTGRES_PASSWORD"]
     )
 
-# ---------- Schema Fetching ----------
 def get_table_schema(conn):
     schema_info = []
     with conn.cursor() as cur:
@@ -27,7 +25,6 @@ def get_table_schema(conn):
             schema_info.append(f"Table: {table} ({cols_str})")
     return "\n".join(schema_info)
 
-# ---------- Initialize Groq ----------
 def init_groq():
     try:
         return Groq(api_key=st.secrets["GROQ_API_KEY"])
@@ -35,60 +32,42 @@ def init_groq():
         st.error(f"Failed to initialize Groq: {e}")
         return None
 
-# ---------- Generate SQL ----------
 def generate_sql(question, schema, conversation_history, client):
     if client is None:
         return None
     
-    history_text = ""
-    for q, a in conversation_history[-5:]:
-        history_text += f"User: {q}\nAssistant: {a}\n"
-    
-    prompt = f"""You are an expert at converting natural language questions into PostgreSQL queries.
+    prompt = f"""Convert this question to PostgreSQL SQL. Use lowercase table names: track, invoiceline, album, artist.
 
-IMPORTANT: This database uses LOWERCASE table names. Here are the tables:
-album, artist, customer, employee, genre, invoice, invoiceline, mediatype, playlist, playlisttrack, track
+Question: {question}
 
-Column names are also lowercase: trackid, albumid, artistid, customerid, invoiceid, quantity, unitprice, total, name, title, etc.
+IMPORTANT: Return ONLY the SQL query. No explanations, no markdown, no extra text. Just the SQL.
 
-Example of correct SQL:
-SELECT track.name, SUM(invoiceline.quantity) as total_sold
-FROM invoiceline
-JOIN track ON invoiceline.trackid = track.trackid
-GROUP BY track.name
-ORDER BY total_sold DESC
-LIMIT 5;
-
-Rules:
-- ONLY output the SQL query, no extra text
-- Use LOWERCASE table and column names
-- Do NOT use double quotes
-- Use LIMIT 10 unless specified
-
-Previous conversation:
-{history_text}
-
-User question: {question}
 SQL:"""
     
     try:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=500
+            temperature=0,
+            max_tokens=300
         )
         sql = response.choices[0].message.content.strip()
         sql = re.sub(r'^```sql\n?', '', sql)
         sql = re.sub(r'^```\n?', '', sql)
         sql = re.sub(r'\n?```$', '', sql)
-        sql = sql.replace('"', '')
-        return sql
+        
+        if not sql.lower().startswith(('select', 'with', 'insert', 'update', 'delete')):
+            match = re.search(r'(select|with|insert|update|delete).+?;', sql, re.IGNORECASE | re.DOTALL)
+            if match:
+                sql = match.group(0)
+            else:
+                return None
+        
+        return sql.strip()
     except Exception as e:
         st.error(f"Groq API error: {e}")
         return None
 
-# ---------- SQL Execution ----------
 def execute_sql(conn, sql):
     try:
         with conn.cursor() as cur:
@@ -108,30 +87,38 @@ def correct_sql(question, sql, error_msg, schema, client):
     if client is None:
         return None
         
-    prompt = f"""The following SQL query failed. Fix it.
+    prompt = f"""The SQL query failed. Fix it.
 
-IMPORTANT: Use LOWERCASE table names: album, artist, track, invoiceline, etc.
-Do NOT use quotes or CamelCase.
-
-Question: {question}
 Failed SQL: {sql}
 Error: {error_msg}
+Question: {question}
 
-Output only the corrected SQL in lowercase:"""
+Use lowercase: track, invoiceline, album, artist.
+
+IMPORTANT: Return ONLY the corrected SQL. No explanations.
+
+Corrected SQL:"""
     
     try:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=500
+            temperature=0,
+            max_tokens=300
         )
         new_sql = response.choices[0].message.content.strip()
         new_sql = re.sub(r'^```sql\n?', '', new_sql)
         new_sql = re.sub(r'^```\n?', '', new_sql)
         new_sql = re.sub(r'\n?```$', '', new_sql)
-        new_sql = new_sql.replace('"', '')
-        return new_sql
+        
+        if not new_sql.lower().startswith(('select', 'with', 'insert', 'update', 'delete')):
+            match = re.search(r'(select|with|insert|update|delete).+?;', new_sql, re.IGNORECASE | re.DOTALL)
+            if match:
+                new_sql = match.group(0)
+            else:
+                return None
+        
+        return new_sql.strip()
     except Exception as e:
         st.error(f"Groq API error: {e}")
         return None
@@ -141,7 +128,7 @@ def result_to_english(question, sql, result_df, client):
         return "No results found." if result_df.empty else "AI not available."
     
     result_str = result_df.head(10).to_string()
-    prompt = f"Question: {question}\nResult:\n{result_str}\nAnswer in one English sentence:"
+    prompt = f"Question: {question}\nResult:\n{result_str}\nAnswer in one sentence:"
     
     try:
         response = client.chat.completions.create(
@@ -154,7 +141,6 @@ def result_to_english(question, sql, result_df, client):
     except Exception:
         return f"Results:\n{result_str}"
 
-# ---------- Main App ----------
 def main():
     st.set_page_config(page_title="AI SQL Agent", layout="wide")
     st.title("🗄️ Natural Language SQL Agent")

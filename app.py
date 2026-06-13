@@ -48,21 +48,40 @@ def init_groq():
         st.error(f"Failed to initialize Groq: {e}")
         return None
 
-# ---------- LLM: Natural Language -> SQL (Groq) ----------
+# ---------- Helper: Convert SQL to lowercase ----------
+def fix_table_names(sql):
+    """Convert CamelCase table names to lowercase."""
+    # List of common Chinook tables
+    tables = ['Album', 'Artist', 'Customer', 'Employee', 'Genre', 
+              'Invoice', 'InvoiceLine', 'MediaType', 'Playlist', 
+              'PlaylistTrack', 'Track']
+    
+    for table in tables:
+        sql = re.sub(rf'\b{table}\b', table.lower(), sql, flags=re.IGNORECASE)
+    
+    # Fix column names to lowercase too
+    columns = ['TrackId', 'AlbumId', 'ArtistId', 'CustomerId', 
+               'InvoiceId', 'GenreId', 'PlaylistId', 'Quantity', 'Total']
+    
+    for col in columns:
+        sql = re.sub(rf'\b{col}\b', col.lower(), sql, flags=re.IGNORECASE)
+    
+    return sql
+
+# ---------- LLM: Natural Language -> SQL ----------
 def generate_sql(question, schema, conversation_history, client):
     """Ask Groq to generate a valid PostgreSQL query."""
     if client is None:
         return None
     
-    # Build conversation history
     history_text = ""
     for q, a in conversation_history[-5:]:
         history_text += f"User: {q}\nAssistant: {a}\n"
     
     prompt = f"""You are an expert at converting natural language questions into PostgreSQL queries.
 
-IMPORTANT: This database uses table and column names in CamelCase (first letter capitalized).
-Use the EXACT names as shown below.
+IMPORTANT: This database uses LOWERCASE table and column names.
+Use the EXACT names as shown below:
 
 Schema:
 {schema}
@@ -71,17 +90,17 @@ Previous conversation:
 {history_text}
 
 Example of correct SQL:
-SELECT Track.Name, SUM(InvoiceLine.Quantity) as TotalSold
-FROM InvoiceLine
-JOIN Track ON InvoiceLine.TrackId = Track.TrackId
-GROUP BY Track.Name
-ORDER BY TotalSold DESC
+SELECT track.name, SUM(invoiceline.quantity) as total_sold
+FROM invoiceline
+JOIN track ON invoiceline.trackid = track.trackid
+JOIN album ON track.albumid = album.albumid
+GROUP BY track.name
+ORDER BY total_sold DESC
 LIMIT 5;
 
 Rules:
 - ONLY output the SQL query, no extra text, no markdown
-- Use the table and column names EXACTLY as shown in the schema
-- Do NOT use double quotes around names
+- Use LOWERCASE table and column names
 - Use LIMIT 10 unless specified otherwise
 
 User question: {question}
@@ -100,6 +119,9 @@ SQL:"""
         sql = re.sub(r'^```sql\n?', '', sql)
         sql = re.sub(r'^```\n?', '', sql)
         sql = re.sub(r'\n?```$', '', sql)
+        
+        # Convert to lowercase table names
+        sql = fix_table_names(sql)
         
         return sql
     except Exception as e:
@@ -130,19 +152,18 @@ def correct_sql(question, sql, error_msg, schema, client):
         
     prompt = f"""The following SQL query failed. Please fix it.
 
-IMPORTANT: This database uses table names in CamelCase like: InvoiceLine, Track, Customer.
-Do NOT use double quotes. Use the exact names from the schema.
+IMPORTANT: This database uses LOWERCASE table names like: invoiceline, track, album, customer.
+Do NOT use CamelCase. Use lowercase only.
 
 Question: {question}
 Failed SQL: {sql}
 Error: {error_msg}
 
-Schema (use these exact names):
+Schema (use lowercase names):
 {schema}
 
 Rules:
-- Use the exact table and column names from the schema (CamelCase)
-- Do NOT add double quotes
+- Use lowercase table and column names
 - Output only the corrected SQL
 
 Corrected SQL:"""
@@ -158,6 +179,7 @@ Corrected SQL:"""
         new_sql = re.sub(r'^```sql\n?', '', new_sql)
         new_sql = re.sub(r'^```\n?', '', new_sql)
         new_sql = re.sub(r'\n?```$', '', new_sql)
+        new_sql = fix_table_names(new_sql)
         return new_sql
     except Exception as e:
         st.error(f"Groq API error: {e}")
@@ -210,13 +232,12 @@ def main():
             st.session_state.schema = get_table_schema(st.session_state.conn)
             st.success("✅ Connected to database!")
             
-            # Show tables in sidebar
             with st.sidebar:
                 st.write("📋 Database Tables:")
-                for table in ['Album', 'Artist', 'Customer', 'Employee', 'Genre', 
-                              'Invoice', 'InvoiceLine', 'MediaType', 'Playlist', 
-                              'PlaylistTrack', 'Track']:
-                    st.write(f"  - {table}")
+                cur = st.session_state.conn.cursor()
+                cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name;")
+                for table in cur.fetchall():
+                    st.write(f"  - {table[0]}")
         except Exception as e:
             st.error(f"Database error: {e}")
             st.stop()
@@ -242,7 +263,6 @@ def main():
                 st.caption(f"🔍 SQL: `{sql}`")
                 success, result = execute_sql(st.session_state.conn, sql)
                 
-                # Self-correction
                 attempts = 1
                 while not success and attempts < 3:
                     st.warning(f"Error: {result}. Fixing...")

@@ -24,18 +24,18 @@ def generate_sql(question, client):
     if client is None:
         return None
     
-    prompt = f"""Convert to PostgreSQL SQL. Use double quotes: "Track", "InvoiceLine", "Album".
+    prompt = f"""Convert to PostgreSQL SQL. ALL TABLES ARE LOWERCASE: track, invoiceline, album, artist.
 
 Question: {question}
 
-Example: SELECT "Track"."Name", SUM("InvoiceLine"."Quantity") as total_sold 
-FROM "InvoiceLine" 
-JOIN "Track" ON "InvoiceLine"."TrackId" = "Track"."TrackId" 
-GROUP BY "Track"."Name" 
+Example: SELECT track.name, SUM(invoiceline.quantity) as total_sold 
+FROM invoiceline 
+JOIN track ON invoiceline.trackid = track.trackid 
+GROUP BY track.name 
 ORDER BY total_sold DESC 
 LIMIT 5;
 
-Return ONLY SQL. No markdown.
+Return ONLY SQL. No markdown. Use lowercase names.
 
 SQL:"""
     
@@ -50,9 +50,9 @@ SQL:"""
         sql = re.sub(r'^```sql\n?', '', sql)
         sql = re.sub(r'^```\n?', '', sql)
         sql = re.sub(r'\n?```$', '', sql)
-        # Remove any double double-quotes
-        sql = sql.replace('""', '"')
-        return sql
+        # Remove any quotes
+        sql = sql.replace('"', '')
+        return sql.lower()
     except Exception as e:
         st.error(f"Groq error: {e}")
         return None
@@ -84,8 +84,8 @@ def main():
             st.success("✅ Connected to database!")
             
             with st.sidebar:
-                st.write("📋 Database Tables:")
-                tables = ['"Track"', '"InvoiceLine"', '"Album"', '"Artist"']
+                st.write("📋 Database Tables (lowercase):")
+                tables = ['track', 'invoiceline', 'album', 'artist', 'customer', 'genre', 'invoice']
                 for table in tables:
                     st.write(f"  - {table}")
         except Exception as e:
@@ -118,7 +118,7 @@ def main():
                 if success and isinstance(result, pd.DataFrame):
                     st.dataframe(result)
                     with st.chat_message("assistant"):
-                        st.write(f"Found {len(result)} results")
+                        st.write(f"✅ Found {len(result)} results")
                     st.session_state.messages.append((user_question, f"Found {len(result)} results"))
                 elif success:
                     st.success("Query executed successfully")

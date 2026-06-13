@@ -2,7 +2,7 @@ import streamlit as st
 import psycopg2
 import pandas as pd
 import re
-import google.generativeai as genai
+from groq import Groq
 
 # ---------- Database Connection ----------
 def get_db_connection():
@@ -38,31 +38,37 @@ def get_table_schema(conn):
             schema_info.append(f"Table: {table} ({cols_str})")
     return "\n".join(schema_info)
 
-# ---------- Initialize Gemini ----------
-def init_gemini():
-    """Setup Gemini API with error handling."""
+# ---------- Initialize Groq ----------
+def init_groq():
+    """Setup Groq API with error handling."""
     try:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        return model
+        client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+        return client
     except Exception as e:
-        st.error(f"Failed to initialize Gemini: {e}")
+        st.error(f"Failed to initialize Groq: {e}")
         return None
 
-# ---------- LLM: Natural Language -> SQL ----------
-def generate_sql(question, schema, conversation_history, model):
-    """Ask Gemini to generate a valid PostgreSQL query."""
-    if model is None:
+# ---------- LLM: Natural Language -> SQL (Groq) ----------
+def generate_sql(question, schema, conversation_history, client):
+    """Ask Groq to generate a valid PostgreSQL query."""
+    if client is None:
         return None
     
-    prompt = f"""
-You are an expert at converting natural language questions into PostgreSQL queries.
+    # Build conversation history
+    history_text = ""
+    for q, a in conversation_history[-5:]:
+        history_text += f"User: {q}\nAssistant: {a}\n"
+    
+    prompt = f"""You are an expert at converting natural language questions into PostgreSQL queries.
 
 IMPORTANT: This database uses table and column names in CamelCase (first letter capitalized).
-Use the EXACT names as shown below - they are case-sensitive but work without quotes:
+Use the EXACT names as shown below.
 
 Schema:
 {schema}
+
+Previous conversation:
+{history_text}
 
 Example of correct SQL:
 SELECT Track.Name, SUM(InvoiceLine.Quantity) as TotalSold
@@ -79,12 +85,16 @@ Rules:
 - Use LIMIT 10 unless specified otherwise
 
 User question: {question}
-SQL:
-"""
+SQL:"""
     
     try:
-        response = model.generate_content(prompt)
-        sql = response.text.strip()
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=500
+        )
+        sql = response.choices[0].message.content.strip()
         
         # Cleanup markdown
         sql = re.sub(r'^```sql\n?', '', sql)
@@ -93,7 +103,7 @@ SQL:
         
         return sql
     except Exception as e:
-        st.error(f"Gemini API error: {e}")
+        st.error(f"Groq API error: {e}")
         return None
 
 # ---------- SQL Execution ----------
@@ -113,13 +123,12 @@ def execute_sql(conn, sql):
     except Exception as e:
         return False, str(e)
 
-def correct_sql(question, sql, error_msg, schema, model):
-    """Ask Gemini to fix the SQL based on the error."""
-    if model is None:
+def correct_sql(question, sql, error_msg, schema, client):
+    """Ask Groq to fix the SQL based on the error."""
+    if client is None:
         return None
         
-    prompt = f"""
-The following SQL query failed. Please fix it.
+    prompt = f"""The following SQL query failed. Please fix it.
 
 IMPORTANT: This database uses table names in CamelCase like: InvoiceLine, Track, Customer.
 Do NOT use double quotes. Use the exact names from the schema.
@@ -136,38 +145,47 @@ Rules:
 - Do NOT add double quotes
 - Output only the corrected SQL
 
-Corrected SQL:
-"""
+Corrected SQL:"""
+    
     try:
-        response = model.generate_content(prompt)
-        new_sql = response.text.strip()
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=500
+        )
+        new_sql = response.choices[0].message.content.strip()
         new_sql = re.sub(r'^```sql\n?', '', new_sql)
         new_sql = re.sub(r'^```\n?', '', new_sql)
         new_sql = re.sub(r'\n?```$', '', new_sql)
         return new_sql
     except Exception as e:
-        st.error(f"Gemini API error: {e}")
+        st.error(f"Groq API error: {e}")
         return None
 
 # ---------- Result to English ----------
-def result_to_english(question, sql, result_df, model):
+def result_to_english(question, sql, result_df, client):
     """Convert the query result into a plain English answer."""
-    if model is None or result_df.empty:
+    if client is None or result_df.empty:
         return "No results found." if result_df.empty else "AI not available."
     
     result_str = result_df.head(10).to_string()
     
-    prompt = f"""
-Question: {question}
+    prompt = f"""Question: {question}
 Query result:
 {result_str}
 
 Answer the question in one clear English sentence.
-Answer:
-"""
+Answer:"""
+    
     try:
-        response = model.generate_content(prompt)
-        return response.text.strip()
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=150
+        )
+        return response.choices[0].message.content.strip()
     except Exception:
         return f"Results:\n{result_str}"
 
@@ -175,12 +193,12 @@ Answer:
 def main():
     st.set_page_config(page_title="AI SQL Agent", layout="wide")
     st.title("🗄️ Natural Language SQL Agent")
-    st.info("🤖 Using Google Gemini 2.5 Flash")
+    st.info("🤖 Using Groq Llama 3 (100% Free)")
     
     # Initialize
-    if "gemini_model" not in st.session_state:
-        st.session_state.gemini_model = init_gemini()
-        if st.session_state.gemini_model is None:
+    if "groq_client" not in st.session_state:
+        st.session_state.groq_client = init_groq()
+        if st.session_state.groq_client is None:
             st.stop()
     
     if "messages" not in st.session_state:
@@ -192,7 +210,7 @@ def main():
             st.session_state.schema = get_table_schema(st.session_state.conn)
             st.success("✅ Connected to database!")
             
-            # Show tables in sidebar for debugging
+            # Show tables in sidebar
             with st.sidebar:
                 st.write("📋 Database Tables:")
                 for table in ['Album', 'Artist', 'Customer', 'Employee', 'Genre', 
@@ -218,7 +236,7 @@ def main():
         
         with st.spinner("Generating SQL..."):
             sql = generate_sql(user_question, st.session_state.schema, 
-                              st.session_state.messages, st.session_state.gemini_model)
+                              st.session_state.messages, st.session_state.groq_client)
             
             if sql:
                 st.caption(f"🔍 SQL: `{sql}`")
@@ -229,14 +247,14 @@ def main():
                 while not success and attempts < 3:
                     st.warning(f"Error: {result}. Fixing...")
                     sql = correct_sql(user_question, sql, result, 
-                                     st.session_state.schema, st.session_state.gemini_model)
+                                     st.session_state.schema, st.session_state.groq_client)
                     if sql:
                         st.caption(f"🛠️ Fixed SQL: `{sql}`")
                         success, result = execute_sql(st.session_state.conn, sql)
                     attempts += 1
                 
                 if success and isinstance(result, pd.DataFrame):
-                    answer = result_to_english(user_question, sql, result, st.session_state.gemini_model)
+                    answer = result_to_english(user_question, sql, result, st.session_state.groq_client)
                     with st.expander("📊 Data"):
                         st.dataframe(result)
                 elif success:

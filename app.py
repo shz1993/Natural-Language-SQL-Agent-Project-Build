@@ -48,10 +48,9 @@ def init_groq():
         st.error(f"Failed to initialize Groq: {e}")
         return None
 
-# ---------- Helper: Convert SQL to lowercase ----------
+# ---------- Helper: Convert to lowercase ----------
 def fix_table_names(sql):
     """Convert CamelCase table names to lowercase."""
-    # List of common Chinook tables
     tables = ['Album', 'Artist', 'Customer', 'Employee', 'Genre', 
               'Invoice', 'InvoiceLine', 'MediaType', 'Playlist', 
               'PlaylistTrack', 'Track']
@@ -59,7 +58,6 @@ def fix_table_names(sql):
     for table in tables:
         sql = re.sub(rf'\b{table}\b', table.lower(), sql, flags=re.IGNORECASE)
     
-    # Fix column names to lowercase too
     columns = ['TrackId', 'AlbumId', 'ArtistId', 'CustomerId', 
                'InvoiceId', 'GenreId', 'PlaylistId', 'Quantity', 'Total']
     
@@ -81,7 +79,6 @@ def generate_sql(question, schema, conversation_history, client):
     prompt = f"""You are an expert at converting natural language questions into PostgreSQL queries.
 
 IMPORTANT: This database uses LOWERCASE table and column names.
-Use the EXACT names as shown below:
 
 Schema:
 {schema}
@@ -89,19 +86,18 @@ Schema:
 Previous conversation:
 {history_text}
 
-Example of correct SQL:
+Example:
 SELECT track.name, SUM(invoiceline.quantity) as total_sold
 FROM invoiceline
 JOIN track ON invoiceline.trackid = track.trackid
-JOIN album ON track.albumid = album.albumid
 GROUP BY track.name
 ORDER BY total_sold DESC
 LIMIT 5;
 
 Rules:
-- ONLY output the SQL query, no extra text, no markdown
+- ONLY output the SQL query, no extra text
 - Use LOWERCASE table and column names
-- Use LIMIT 10 unless specified otherwise
+- Use LIMIT 10 unless specified
 
 User question: {question}
 SQL:"""
@@ -114,15 +110,10 @@ SQL:"""
             max_tokens=500
         )
         sql = response.choices[0].message.content.strip()
-        
-        # Cleanup markdown
         sql = re.sub(r'^```sql\n?', '', sql)
         sql = re.sub(r'^```\n?', '', sql)
         sql = re.sub(r'\n?```$', '', sql)
-        
-        # Convert to lowercase table names
         sql = fix_table_names(sql)
-        
         return sql
     except Exception as e:
         st.error(f"Groq API error: {e}")
@@ -150,23 +141,18 @@ def correct_sql(question, sql, error_msg, schema, client):
     if client is None:
         return None
         
-    prompt = f"""The following SQL query failed. Please fix it.
+    prompt = f"""The following SQL query failed. Fix it.
 
-IMPORTANT: This database uses LOWERCASE table names like: invoiceline, track, album, customer.
-Do NOT use CamelCase. Use lowercase only.
+IMPORTANT: Use LOWERCASE table names like: invoiceline, track, album.
 
 Question: {question}
 Failed SQL: {sql}
 Error: {error_msg}
 
-Schema (use lowercase names):
+Schema (use lowercase):
 {schema}
 
-Rules:
-- Use lowercase table and column names
-- Output only the corrected SQL
-
-Corrected SQL:"""
+Output only the corrected SQL:"""
     
     try:
         response = client.chat.completions.create(
@@ -194,11 +180,10 @@ def result_to_english(question, sql, result_df, client):
     result_str = result_df.head(10).to_string()
     
     prompt = f"""Question: {question}
-Query result:
+Result:
 {result_str}
 
-Answer the question in one clear English sentence.
-Answer:"""
+Answer in one English sentence:"""
     
     try:
         response = client.chat.completions.create(
@@ -232,12 +217,14 @@ def main():
             st.session_state.schema = get_table_schema(st.session_state.conn)
             st.success("✅ Connected to database!")
             
+            # Show tables in sidebar
             with st.sidebar:
                 st.write("📋 Database Tables:")
-                cur = st.session_state.conn.cursor()
-                cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name;")
-                for table in cur.fetchall():
-                    st.write(f"  - {table[0]}")
+                manual_tables = ['album', 'artist', 'customer', 'employee', 'genre', 
+                                 'invoice', 'invoiceline', 'mediatype', 'playlist', 
+                                 'playlisttrack', 'track']
+                for table in manual_tables:
+                    st.write(f"  - {table}")
         except Exception as e:
             st.error(f"Database error: {e}")
             st.stop()

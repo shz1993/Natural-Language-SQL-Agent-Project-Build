@@ -20,49 +20,11 @@ def init_groq():
         st.error(f"Failed to initialize Groq: {e}")
         return None
 
-def add_quotes_to_tables(sql):
-    """Add double quotes around table names that need them."""
-    # Mapping lowercase to proper case with quotes
-    tables = {
-        'track': '"Track"',
-        'invoiceline': '"InvoiceLine"',
-        'album': '"Album"',
-        'artist': '"Artist"',
-        'customer': '"Customer"',
-        'employee': '"Employee"',
-        'genre': '"Genre"',
-        'invoice': '"Invoice"',
-        'mediatype': '"MediaType"',
-        'playlist': '"Playlist"',
-        'playlisttrack': '"PlaylistTrack"'
-    }
-    
-    for lower, quoted in tables.items():
-        sql = re.sub(rf'\b{lower}\b', quoted, sql, flags=re.IGNORECASE)
-    
-    # Also fix column names
-    columns = {
-        'trackid': '"TrackId"',
-        'albumid': '"AlbumId"',
-        'artistid': '"ArtistId"',
-        'customerid': '"CustomerId"',
-        'invoiceid': '"InvoiceId"',
-        'quantity': '"Quantity"',
-        'name': '"Name"',
-        'title': '"Title"',
-        'composer': '"Composer"'
-    }
-    
-    for lower, quoted in columns.items():
-        sql = re.sub(rf'\b{lower}\b', quoted, sql, flags=re.IGNORECASE)
-    
-    return sql
-
 def generate_sql(question, client):
     if client is None:
         return None
     
-    prompt = f"""Convert to PostgreSQL SQL. Use exact table names: "Track", "InvoiceLine", "Album", "Artist".
+    prompt = f"""Convert to PostgreSQL SQL. Use double quotes: "Track", "InvoiceLine", "Album".
 
 Question: {question}
 
@@ -73,7 +35,7 @@ GROUP BY "Track"."Name"
 ORDER BY total_sold DESC 
 LIMIT 5;
 
-Return ONLY SQL. No explanations.
+Return ONLY SQL. No markdown.
 
 SQL:"""
     
@@ -88,6 +50,8 @@ SQL:"""
         sql = re.sub(r'^```sql\n?', '', sql)
         sql = re.sub(r'^```\n?', '', sql)
         sql = re.sub(r'\n?```$', '', sql)
+        # Remove any double double-quotes
+        sql = sql.replace('""', '"')
         return sql
     except Exception as e:
         st.error(f"Groq error: {e}")
@@ -121,7 +85,7 @@ def main():
             
             with st.sidebar:
                 st.write("📋 Database Tables:")
-                tables = ['"Track"', '"InvoiceLine"', '"Album"', '"Artist"', '"Customer"']
+                tables = ['"Track"', '"InvoiceLine"', '"Album"', '"Artist"']
                 for table in tables:
                     st.write(f"  - {table}")
         except Exception as e:
@@ -147,18 +111,15 @@ def main():
             sql = generate_sql(user_question, st.session_state.groq_client)
             
             if sql:
-                # Add quotes to table names
-                sql_fixed = add_quotes_to_tables(sql)
-                st.caption(f"🔍 SQL: `{sql_fixed}`")
+                st.caption(f"🔍 SQL: `{sql}`")
                 
-                success, result = execute_sql(st.session_state.conn, sql_fixed)
+                success, result = execute_sql(st.session_state.conn, sql)
                 
                 if success and isinstance(result, pd.DataFrame):
-                    answer = f"Found {len(result)} results"
                     st.dataframe(result)
                     with st.chat_message("assistant"):
-                        st.write(answer)
-                    st.session_state.messages.append((user_question, answer))
+                        st.write(f"Found {len(result)} results")
+                    st.session_state.messages.append((user_question, f"Found {len(result)} results"))
                 elif success:
                     st.success("Query executed successfully")
                     st.session_state.messages.append((user_question, "Query executed successfully"))

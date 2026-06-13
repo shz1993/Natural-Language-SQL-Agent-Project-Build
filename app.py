@@ -10,8 +10,7 @@ def get_db_connection():
         port=st.secrets["POSTGRES_PORT"],
         database=st.secrets["POSTGRES_DB"],
         user=st.secrets["POSTGRES_USER"],
-        password=st.secrets["POSTGRES_PASSWORD"],
-        options="-c search_path=public"  # FORCE public schema
+        password=st.secrets["POSTGRES_PASSWORD"]
     )
 
 def get_table_schema(conn):
@@ -66,11 +65,8 @@ SQL:"""
 def execute_sql(conn, sql):
     try:
         with conn.cursor() as cur:
-            # Tambahkan schema public ke tabel
-            sql_fixed = re.sub(r'\b(track|invoiceline|album|artist|customer|employee|genre|invoice|mediatype|playlist|playlisttrack)\b', r'public.\1', sql, flags=re.IGNORECASE)
-            
-            cur.execute(sql_fixed)
-            if sql_fixed.strip().upper().startswith("SELECT"):
+            cur.execute(sql)
+            if sql.strip().upper().startswith("SELECT"):
                 rows = cur.fetchall()
                 colnames = [desc[0] for desc in cur.description]
                 df = pd.DataFrame(rows, columns=colnames)
@@ -85,7 +81,7 @@ def correct_sql(question, sql, error_msg, schema, client):
     if client is None:
         return None
         
-    prompt = f"""Fix this SQL. Use tables: public.track, public.invoiceline, public.album, public.artist.
+    prompt = f"""Fix this SQL. Use lowercase table names: track, invoiceline, album, artist.
 
 Failed SQL: {sql}
 Error: {error_msg}
